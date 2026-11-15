@@ -3,12 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>RC トヨタ風ソナー＆連動ガイド</title>
+<title>RC ソナー＆ガイド</title>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
   #container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; background: #000; }
-  
   video { width: 100%; height: 100%; object-fit: cover; }
   #guide-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
   
@@ -16,7 +15,6 @@
   #startBtn { font-size: 18px; padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; }
   #status { font-size: 16px; font-weight: bold; color: #0f0; }
 
-  /* 更新されたことが一目でわかるよう枠線をオレンジに変更 */
   #gearBtn {
     position: absolute; top: 15px; right: 15px; z-index: 20;
     width: 44px; height: 44px; border-radius: 50%;
@@ -77,7 +75,7 @@ const turnSensSlider = document.getElementById('turnSensSlider');
 const invertBtn = document.getElementById('invertBtn');
 const fitBtn = document.getElementById('fitBtn');
 
-let audioCtx;
+let audioCtx = null;
 let currentLevel = 0;
 let continuousOsc = null;
 let step = 0;
@@ -85,7 +83,7 @@ let step = 0;
 let turnAngle = 0;
 let invertDir = -1;
 let proximityThreshold = 45;
-let turnGain = 3.5; // わずかな横移動も大きく増幅する倍率
+let turnGain = 4.0;
 let isCover = true;
 
 let prevLeftLight = null;
@@ -107,7 +105,7 @@ sensSlider.oninput = function() {
 };
 
 turnSensSlider.oninput = function() {
-  turnGain = parseInt(turnSensSlider.value) * 0.5;
+  turnGain = parseInt(turnSensSlider.value) * 0.6;
 };
 
 invertBtn.onclick = function() {
@@ -171,11 +169,15 @@ startBtn.onclick = async function() {
     gearBtn.style.display = 'flex';
     statusText.innerText = '起動中...';
 
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new AudioCtx();
+    if (audioCtx.state === 'suspended') {
+      await audioCtx.resume();
+    }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' }, audio: false
+      video: { facingMode: 'environment' },
+      audio: false
     });
     video.srcObject = stream;
 
@@ -194,7 +196,6 @@ function analyzeCameraMotion() {
   ctx.drawImage(video, 0, 0, 64, 64);
   const fullData = ctx.getImageData(0, 0, 64, 64).data;
   
-  // 1. 中央エリアの接近スコア
   let edgeSum = 0;
   let brightnessSum = 0;
   let count = 0;
@@ -204,12 +205,12 @@ function analyzeCameraMotion() {
       const idx = (y * 64 + x) * 4;
       const idxRight = (y * 64 + (x + 1)) * 4;
       
-      const bright = (fullData[idx] + fullData[idx+1] + fullData[idx+2]) / 3;
+      const bright = (fullData[idx] + fullData[idx + 1] + fullData[idx + 2]) / 3;
       brightnessSum += bright;
 
       const edge = Math.abs(fullData[idx] - fullData[idxRight]) + 
-                   Math.abs(fullData[idx+1] - fullData[idxRight+1]) + 
-                   Math.abs(fullData[idx+2] - fullData[idxRight+2]);
+                   Math.abs(fullData[idx + 1] - fullData[idxRight + 1]) + 
+                   Math.abs(fullData[idx + 2] - fullData[idxRight + 2]);
       edgeSum += edge;
       count++;
     }
@@ -219,25 +220,23 @@ function analyzeCameraMotion() {
   const avgBright = brightnessSum / count;
   const proximityScore = Math.max(0, 50 - avgEdge * 1.8) + Math.max(0, (120 - avgBright) * 0.4);
 
-  // 2. 画面の「左側エリア」と「右側エリア」の明るさ・色変化の差分で横移動を直接検出
   let leftSum = 0;
   let rightSum = 0;
   for (let y = 8; y < 56; y += 2) {
     for (let x = 4; x < 30; x += 2) {
       const idx = (y * 64 + x) * 4;
-      leftSum += fullData[idx] + fullData[idx+1] + fullData[idx+2];
+      leftSum += fullData[idx] + fullData[idx + 1] + fullData[idx + 2];
     }
     for (let x = 34; x < 60; x += 2) {
       const idx = (y * 64 + x) * 4;
-      rightSum += fullData[idx] + fullData[idx+1] + fullData[idx+2];
+      rightSum += fullData[idx] + fullData[idx + 1] + fullData[idx + 2];
     }
   }
 
   if (prevLeftLight !== null && prevRightLight !== null) {
     const leftDiff = leftSum - prevLeftLight;
     const rightDiff = rightSum - prevRightLight;
-    // 左右の変化量の差（片側が明るくなり反対側が暗くなる＝横にカメラが動いた証拠）
-    const panSignal = (rightDiff - leftDiff) / 15000;
+    const panSignal = (rightDiff - leftDiff) / 12000;
 
     turnAngle = turnAngle * 0.85 + (panSignal * turnGain * invertDir);
     if (turnAngle > 1.5) turnAngle = 1.5;
@@ -257,9 +256,12 @@ function drawGuides() {
 
   const offset = turnAngle * (w * 0.7);
 
-  const bL = w * 0.15, bR = w * 0.85;
-  const tL = w * 0.32, tR = w * 0.68;
-  const tY = h * 0.45, bY = h * 0.88;
+  const bL = w * 0.15;
+  const bR = w * 0.85;
+  const tL = w * 0.32;
+  const tR = w * 0.68;
+  const tY = h * 0.45;
+  const bY = h * 0.88;
 
   gCtx.lineWidth = 4;
 
@@ -267,27 +269,27 @@ function drawGuides() {
   gCtx.strokeStyle = 'rgba(255, 50, 50, 0.85)';
   gCtx.beginPath();
   gCtx.moveTo(bL, bY);
-  gCtx.lineTo(bL + (tL - bL)*0.25, bY - (bY - tY)*0.25);
-  gCtx.lineTo(bR - (bR - tR)*0.25, bY - (bY - tY)*0.25);
+  gCtx.lineTo(bL + (tL - bL) * 0.25, bY - (bY - tY) * 0.25);
+  gCtx.lineTo(bR - (bR - tR) * 0.25, bY - (bY - tY) * 0.25);
   gCtx.lineTo(bR, bY);
   gCtx.stroke();
 
   // 黄ライン
   gCtx.strokeStyle = 'rgba(255, 220, 0, 0.85)';
   gCtx.beginPath();
-  gCtx.moveTo(bL + (tL - bL)*0.25, bY - (bY - tY)*0.25);
-  gCtx.lineTo(bL + (tL - bL)*0.6, bY - (bY - tY)*0.6);
-  gCtx.lineTo(bR - (bR - tR)*0.6, bY - (bY - tY)*0.6);
-  gCtx.lineTo(bR - (bR - tR)*0.25, bY - (bY - tY)*0.25);
+  gCtx.moveTo(bL + (tL - bL) * 0.25, bY - (bY - tY) * 0.25);
+  gCtx.lineTo(bL + (tL - bL) * 0.6, bY - (bY - tY) * 0.6);
+  gCtx.lineTo(bR - (bR - tR) * 0.6, bY - (bY - tY) * 0.6);
+  gCtx.lineTo(bR - (bR - tR) * 0.25, bY - (bY - tY) * 0.25);
   gCtx.stroke();
 
   // 緑ライン
   gCtx.strokeStyle = 'rgba(0, 255, 100, 0.85)';
   gCtx.beginPath();
-  gCtx.moveTo(bL + (tL - bL)*0.6, bY - (bY - tY)*0.6);
+  gCtx.moveTo(bL + (tL - bL) * 0.6, bY - (bY - tY) * 0.6);
   gCtx.lineTo(tL, tY);
   gCtx.lineTo(tR, tY);
-  gCtx.lineTo(bR - (bR - tR)*0.6, bY - (bY - tY)*0.6);
+  gCtx.lineTo(bR - (bR - tR) * 0.6, bY - (bY - tY) * 0.6);
   gCtx.stroke();
 
   // オレンジ予想進路線
@@ -295,12 +297,12 @@ function drawGuides() {
   gCtx.lineWidth = 6;
   gCtx.beginPath();
   gCtx.moveTo(bL + 15, bY);
-  gCtx.quadraticCurveTo((bL + tL)/2, (bY + tY)/2, tL + offset, tY);
+  gCtx.quadraticCurveTo((bL + tL) / 2, (bY + tY) / 2, tL + offset, tY);
   gCtx.stroke();
 
   gCtx.beginPath();
   gCtx.moveTo(bR - 15, bY);
-  gCtx.quadraticCurveTo((bR + tR)/2, (bY + tY)/2, tR + offset, tY);
+  gCtx.quadraticCurveTo((bR + tR) / 2, (bY + tY) / 2, tR + offset, tY);
   gCtx.stroke();
 }
 
