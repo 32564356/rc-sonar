@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>RC トヨタ風ソナー＆連動ガイド</title>
+<title>RC トヨタ風ソナー＆カメラ連動ガイド</title>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
@@ -27,7 +27,7 @@
   #menuPanel {
     position: absolute; top: 70px; right: 15px; z-index: 25;
     background: rgba(15,15,15,0.92); border: 1px solid #555;
-    padding: 15px; border-radius: 12px; width: 240px;
+    padding: 15px; border-radius: 12px; width: 250px;
     display: none; text-align: left;
   }
   .subBtn { width: 100%; padding: 10px; margin-top: 8px; background: #333; color: #fff; border: 1px solid #666; border-radius: 6px; font-size: 14px; }
@@ -47,8 +47,12 @@
   <div id="gearBtn">⚙️</div>
 
   <div id="menuPanel">
-    <div style="font-size:13px; color:#ccc;">反応距離（右で遠くから反応）</div>
-    <input type="range" id="sensSlider" min="10" max="90" value="45" style="width:100%; margin:8px 0;">
+    <div style="font-size:13px; color:#ccc;">ソナー反応距離（右で遠くから反応）</div>
+    <input type="range" id="sensSlider" min="10" max="90" value="45" style="width:100%; margin:6px 0 12px 0;">
+    
+    <div style="font-size:13px; color:#ccc;">ガイド線の曲がり感度（右で大きく曲がる）</div>
+    <input type="range" id="turnSensSlider" min="1" max="10" value="5" style="width:100%; margin:6px 0 12px 0;">
+
     <button class="subBtn" id="invertBtn">↔️ ガイド左右反転</button>
     <button class="subBtn" id="fitBtn">🖥️ 画面フィット切替</button>
   </div>
@@ -68,6 +72,7 @@ const startBtn = document.getElementById('startBtn');
 const gearBtn = document.getElementById('gearBtn');
 const menuPanel = document.getElementById('menuPanel');
 const sensSlider = document.getElementById('sensSlider');
+const turnSensSlider = document.getElementById('turnSensSlider');
 const invertBtn = document.getElementById('invertBtn');
 const fitBtn = document.getElementById('fitBtn');
 
@@ -75,14 +80,14 @@ let audioCtx;
 let currentLevel = 0;
 let continuousOsc = null;
 let step = 0;
+
 let turnAngle = 0;
 let invertDir = 1;
 let proximityThreshold = 45;
+let turnSensitivity = 0.35; // カメラの横移動に対する曲がりやすさ
 let isCover = true;
 
 let prevRow = null;
-let gyroWorking = false;
-
 const TOYOTA_FREQ = 2500;
 
 function resizeCanvas() {
@@ -97,6 +102,10 @@ gearBtn.onclick = function() {
 
 sensSlider.oninput = function() {
   proximityThreshold = parseInt(sensSlider.value);
+};
+
+turnSensSlider.oninput = function() {
+  turnSensitivity = parseInt(turnSensSlider.value) * 0.07;
 };
 
 invertBtn.onclick = function() {
@@ -155,18 +164,6 @@ setInterval(function() {
 
 startBtn.onclick = async function() {
   try {
-    // 1. タップした瞬間に最優先でジャイロ許可を取得（GitHub環境で確実に許可を出すため）
-    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
-      try {
-        const res = await DeviceMotionEvent.requestPermission();
-        if (res === 'granted') {
-          window.addEventListener('devicemotion', onMotion);
-        }
-      } catch (err) {}
-    } else if (window.DeviceMotionEvent) {
-      window.addEventListener('devicemotion', onMotion);
-    }
-
     startBtn.style.display = 'none';
     statusText.style.display = 'block';
     gearBtn.style.display = 'flex';
@@ -190,29 +187,12 @@ startBtn.onclick = async function() {
   }
 };
 
-function onMotion(e) {
-  if (!e.rotationRate) return;
-  const rZ = e.rotationRate.alpha || 0;
-  const rY = e.rotationRate.beta || 0;
-  const rX = e.rotationRate.gamma || 0;
-  // 縦置き・横置き・平置きどの向きでも一番大きく回った軸を検知
-  let spd = rZ;
-  if (Math.abs(rY) > Math.abs(spd)) spd = rY;
-  if (Math.abs(rX) > Math.abs(spd)) spd = rX;
-
-  if (Math.abs(spd) > 0.05) {
-    gyroWorking = true;
-    // 感度を3倍にアップし、余韻を残しながら滑らかに戻す
-    turnAngle = turnAngle * 0.90 + (spd * 0.045 * invertDir);
-    if (turnAngle > 1.2) turnAngle = 1.2;
-    if (turnAngle < -1.2) turnAngle = -1.2;
-  }
-}
-
-function analyzeFrame() {
+// カメラ映像の分析（接近スコア ＋ 映像全体の左右移動量の検出）
+function analyzeCameraMotion() {
   ctx.drawImage(video, 0, 0, 64, 64);
   const fullData = ctx.getImageData(0, 0, 64, 64).data;
   
+  // 1. 中央エリアの接近スコア
   let edgeSum = 0;
   let brightnessSum = 0;
   let count = 0;
@@ -237,38 +217,47 @@ function analyzeFrame() {
   const avgBright = brightnessSum / count;
   const proximityScore = Math.max(0, 50 - avgEdge * 1.8) + Math.max(0, (120 - avgBright) * 0.4);
 
-  // ジャイロが許可されなかった場合でもカメラの横流れで斜め線を動かす
-  if (!gyroWorking) {
-    let currentRow = new Float32Array(64);
-    for (let x = 0; x < 64; x++) {
-      let sum = 0;
-      for (let y = 24; y < 40; y++) {
-        const idx = (y * 64 + x) * 4;
-        sum += (fullData[idx] + fullData[idx+1] + fullData[idx+2]) / 3;
-      }
-      currentRow[x] = sum / 16;
+  // 2. 画面全体の横方向の明るさパターンを抽出して、左右どちらにカメラが動いたか判定
+  let currentRow = new Float32Array(64);
+  for (let x = 0; x < 64; x++) {
+    let sum = 0;
+    // 画面の広い範囲（上〜下）の平均を取ることで床の模様や物の動きを確実に捉える
+    for (let y = 10; y < 54; y++) {
+      const idx = (y * 64 + x) * 4;
+      sum += (fullData[idx] * 0.3 + fullData[idx+1] * 0.59 + fullData[idx+2] * 0.11);
     }
-
-    if (prevRow) {
-      let bestShift = 0;
-      let minDiff = 999999;
-      for (let shift = -6; shift <= 6; shift++) {
-        let diff = 0;
-        for (let x = 8; x < 56; x++) {
-          diff += Math.abs(currentRow[x] - prevRow[x + shift]);
-        }
-        if (diff < minDiff) {
-          minDiff = diff;
-          bestShift = shift;
-        }
-      }
-      turnAngle = turnAngle * 0.88 + (bestShift * 0.18 * invertDir);
-      if (turnAngle > 1.2) turnAngle = 1.2;
-      if (turnAngle < -1.2) turnAngle = -1.2;
-    }
-    prevRow = currentRow;
+    currentRow[x] = sum / 44;
   }
 
+  if (prevRow) {
+    let bestShift = 0;
+    let minDiff = 9999999;
+
+    // -10〜+10ピクセルの範囲で、前フレームの景色が一番重なるズレ量を探す
+    for (let shift = -10; shift <= 10; shift++) {
+      let diff = 0;
+      for (let x = 12; x < 52; x++) {
+        diff += Math.abs(currentRow[x] - prevRow[x + shift]);
+      }
+      if (diff < minDiff) {
+        minDiff = diff;
+        bestShift = shift;
+      }
+    }
+
+    // ズレ（カメラが右か左に動いた）を検知したら大きく曲げ、止まったらゆっくり中央へ戻る
+    if (bestShift !== 0) {
+      turnAngle = turnAngle * 0.75 + (bestShift * turnSensitivity * invertDir);
+    } else {
+      turnAngle *= 0.88; // 止まったら滑らかに直進へ戻る
+    }
+
+    // 最大曲がり角の制限
+    if (turnAngle > 1.4) turnAngle = 1.4;
+    if (turnAngle < -1.4) turnAngle = -1.4;
+  }
+
+  prevRow = currentRow;
   return proximityScore;
 }
 
@@ -278,13 +267,14 @@ function drawGuides() {
   gCtx.clearRect(0, 0, w, h);
 
   const offset = turnAngle * (w * 0.55);
+
   const bL = w * 0.15, bR = w * 0.85;
   const tL = w * 0.32, tR = w * 0.68;
   const tY = h * 0.45, bY = h * 0.88;
 
   gCtx.lineWidth = 4;
 
-  // 赤
+  // 赤ライン
   gCtx.strokeStyle = 'rgba(255, 50, 50, 0.85)';
   gCtx.beginPath();
   gCtx.moveTo(bL, bY);
@@ -293,7 +283,7 @@ function drawGuides() {
   gCtx.lineTo(bR, bY);
   gCtx.stroke();
 
-  // 黄
+  // 黄ライン
   gCtx.strokeStyle = 'rgba(255, 220, 0, 0.85)';
   gCtx.beginPath();
   gCtx.moveTo(bL + (tL - bL)*0.25, bY - (bY - tY)*0.25);
@@ -302,7 +292,7 @@ function drawGuides() {
   gCtx.lineTo(bR - (bR - tR)*0.25, bY - (bY - tY)*0.25);
   gCtx.stroke();
 
-  // 緑
+  // 緑ライン
   gCtx.strokeStyle = 'rgba(0, 255, 100, 0.85)';
   gCtx.beginPath();
   gCtx.moveTo(bL + (tL - bL)*0.6, bY - (bY - tY)*0.6);
@@ -312,3 +302,18 @@ function drawGuides() {
   gCtx.stroke();
 
   // オレンジ予想進路線
+  gCtx.strokeStyle = 'rgba(255, 165, 0, 0.95)';
+  gCtx.lineWidth = 5;
+  gCtx.beginPath();
+  gCtx.moveTo(bL + 15, bY);
+  gCtx.quadraticCurveTo((bL + tL)/2, (bY + tY)/2, tL + offset, tY);
+  gCtx.stroke();
+
+  gCtx.beginPath();
+  gCtx.moveTo(bR - 15, bY);
+  gCtx.quadraticCurveTo((bR + tR)/2, (bY + tY)/2, tR + offset, tY);
+  gCtx.stroke();
+}
+
+function loop() {
+  drawGuides();
