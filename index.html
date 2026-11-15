@@ -2,314 +2,69 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>RC ソナー＆ガイド</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-  #container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; background: #000; }
-  video { width: 100%; height: 100%; object-fit: cover; }
-  #guide-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
-  
-  #ui { position: absolute; top: 15px; left: 15px; z-index: 15; background: rgba(0,0,0,0.65); padding: 8px 16px; border-radius: 20px; }
-  #startBtn { font-size: 18px; padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; }
-  #status { font-size: 16px; font-weight: bold; color: #0f0; }
-
-  #gearBtn {
-    position: absolute; top: 15px; right: 15px; z-index: 20;
-    width: 44px; height: 44px; border-radius: 50%;
-    background: rgba(0,0,0,0.75); border: 2px solid #ffa500;
-    color: #fff; font-size: 20px; display: none;
-    justify-content: center; align-items: center;
-  }
-
-  #menuPanel {
-    position: absolute; top: 70px; right: 15px; z-index: 25;
-    background: rgba(15,15,15,0.92); border: 1px solid #555;
-    padding: 15px; border-radius: 12px; width: 250px;
-    display: none; text-align: left;
-  }
-  .subBtn { width: 100%; padding: 10px; margin-top: 8px; background: #333; color: #fff; border: 1px solid #666; border-radius: 6px; font-size: 14px; }
+body{margin:0;background:#000;color:#fff;font-family:sans-serif;overflow:hidden}
+video,canvas{position:fixed;top:0;left:0;width:100%;height:100%;object-fit:cover}
+canvas{pointer-events:none}
+#ui{position:fixed;top:15px;left:15px;z-index:9;background:rgba(0,0,0,.7);padding:8px 16px;border-radius:20px}
+button{font-size:18px;padding:10px 20px;background:#007bff;color:#fff;border:none;border-radius:8px;font-weight:bold}
+#gear{position:fixed;top:15px;right:15px;z-index:9;width:44px;height:44px;border-radius:50%;background:rgba(0,0,0,.7);border:2px solid #ffa500;display:none;align-items:center;justify-content:center;font-size:20px}
+#menu{position:fixed;top:70px;right:15px;z-index:9;background:#111;border:1px solid #555;padding:15px;border-radius:12px;width:230px;display:none}
 </style>
 </head>
 <body>
-
-<div id="container">
-  <video id="video" playsinline muted autoplay></video>
-  <canvas id="guide-canvas"></canvas>
-  
-  <div id="ui">
-    <button id="startBtn">ソナー起動</button>
-    <div id="status" style="display:none;">準備中...</div>
-  </div>
-
-  <div id="gearBtn">⚙️</div>
-
-  <div id="menuPanel">
-    <div style="font-size:13px; color:#ccc;">ソナー反応距離（右で遠くから反応）</div>
-    <input type="range" id="sensSlider" min="10" max="90" value="45" style="width:100%; margin:6px 0 12px 0;">
-    
-    <div style="font-size:13px; color:#ccc;">ガイド線の曲がり感度（右で大きく曲がる）</div>
-    <input type="range" id="turnSensSlider" min="1" max="10" value="7" style="width:100%; margin:6px 0 12px 0;">
-
-    <button class="subBtn" id="invertBtn">↔️ ガイド左右反転</button>
-    <button class="subBtn" id="fitBtn">🖥️ 画面フィット切替</button>
-  </div>
+<video id="v" playsinline muted autoplay></video>
+<canvas id="g"></canvas>
+<div id="ui"><button id="b">ソナー起動</button><div id="s" style="display:none;font-weight:bold">クリア</div></div>
+<div id="gear">⚙️</div>
+<div id="menu">
+  <div>ソナー感度</div><input type="range" id="r1" min="10" max="90" value="45" style="width:100%">
+  <div style="margin-top:8px">曲がり感度</div><input type="range" id="r2" min="1" max="10" value="7" style="width:100%">
+  <button id="inv" style="width:100%;margin-top:10px;font-size:14px;background:#333">↔️ 左右反転</button>
 </div>
-
-<canvas id="canvas" width="64" height="64" style="display:none;"></canvas>
-
+<canvas id="p" width="64" height="64" style="display:none"></canvas>
 <script>
-const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d', { willReadFrequently: true });
-const guideCanvas = document.getElementById('guide-canvas');
-const gCtx = guideCanvas.getContext('2d');
-
-const statusText = document.getElementById('status');
-const startBtn = document.getElementById('startBtn');
-const gearBtn = document.getElementById('gearBtn');
-const menuPanel = document.getElementById('menuPanel');
-const sensSlider = document.getElementById('sensSlider');
-const turnSensSlider = document.getElementById('turnSensSlider');
-const invertBtn = document.getElementById('invertBtn');
-const fitBtn = document.getElementById('fitBtn');
-
-let audioCtx = null;
-let currentLevel = 0;
-let continuousOsc = null;
-let step = 0;
-
-let turnAngle = 0;
-let invertDir = -1;
-let proximityThreshold = 45;
-let turnGain = 4.0;
-let isCover = true;
-
-let prevLeftLight = null;
-let prevRightLight = null;
-const TOYOTA_FREQ = 2500;
-
-function resizeCanvas() {
-  guideCanvas.width = window.innerWidth;
-  guideCanvas.height = window.innerHeight;
+const v=document.getElementById('v'),g=document.getElementById('g'),gx=g.getContext('2d'),p=document.getElementById('p'),px=p.getContext('2d',{willReadFrequently:true}),b=document.getElementById('b'),s=document.getElementById('s'),gear=document.getElementById('gear'),menu=document.getElementById('menu');
+let ac,lv=0,osc=null,st=0,ang=0,inv=-1,th=45,gain=4,pL=null,pR=null;
+gear.onclick=()=>menu.style.display=menu.style.display=='block'?'none':'block';
+document.getElementById('r1').oninput=e=>th=+e.target.value;
+document.getElementById('r2').oninput=e=>gain=+e.target.value*0.6;
+document.getElementById('inv').onclick=()=>inv*=-1;
+function beep(d){if(!ac)return;const o=ac.createOscillator(),gn=ac.createGain();o.type='triangle';o.frequency.value=2500;gn.gain.setValueAtTime(.35,ac.currentTime);gn.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);o.connect(gn);gn.connect(ac.destination);o.start();o.stop(ac.currentTime+d);}
+setInterval(()=>{st++;if(lv==3){if(!osc){osc=ac.createOscillator();const gn=ac.createGain();osc.type='triangle';osc.frequency.value=2500;gn.gain.value=.35;osc.connect(gn);gn.connect(ac.destination);osc.start();}}else{if(osc){osc.stop();osc=null;}if(lv==2&&st%2==0)beep(.06);else if(lv==1&&st%6==0)beep(.07);}},85);
+b.onclick=async()=>{
+  b.style.display='none';s.style.display='block';gear.style.display='flex';
+  ac=new(window.AudioContext||window.webkitAudioContext)();if(ac.state=='suspended')await ac.resume();
+  v.srcObject=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+  setTimeout(()=>{g.width=innerWidth;g.height=innerHeight;loop();},800);
+};
+function loop(){
+  const w=g.width=innerWidth,h=g.height=innerHeight;
+  if(v.readyState>=2){
+    px.drawImage(v,0,0,64,64);const d=px.getImageData(0,0,64,64).data;
+    let ed=0,br=0,c=0,lS=0,rS=0;
+    for(let y=16;y<47;y++)for(let x=16;x<47;x++){const i=(y*64+x)*4;br+=(d[i]+d[i+1]+d[i+2])/3;ed+=Math.abs(d[i]-d[i+4])+Math.abs(d[i+1]-d[i+5])+Math.abs(d[i+2]-d[i+6]);c++;}
+    for(let y=8;y<56;y+=2){for(let x=4;x<30;x+=2){const i=(y*64+x)*4;lS+=d[i]+d[i+1]+d[i+2];}for(let x=34;x<60;x+=2){const i=(y*64+x)*4;rS+=d[i]+d[i+1]+d[i+2];}}
+    if(pL!==null){ang=Math.max(-1.5,Math.min(1.5,ang*.85+((rS-pR)-(lS-pL))/12000*gain*inv));}
+    pL=lS;pR=rS;
+    const sc=Math.max(0,50-(ed/c)*1.8)+Math.max(0,(120-(br/c))*.4),tr=100-th;
+    if(sc>tr+22){lv=3;s.innerText='危険！ストップ';s.style.color='#f33';}
+    else if(sc>tr+10){lv=2;s.innerText='接近中';s.style.color='#ff3';}
+    else if(sc>tr){lv=1;s.innerText='障害物検知';s.style.color='#3f3';}
+    else{lv=0;s.innerText='クリア';s.style.color='#fff';}
+  }
+  gx.clearRect(0,0,w,h);
+  const off=ang*w*.7,bL=w*.15,bR=w*.85,tL=w*.32,tR=w*.68,tY=h*.45,bY=h*.88;
+  gx.lineWidth=4;
+  gx.strokeStyle='rgba(255,50,50,.85)';gx.beginPath();gx.moveTo(bL,bY);gx.lineTo(bL+(tL-bL)*.25,bY-(bY-tY)*.25);gx.lineTo(bR-(bR-tR)*.25,bY-(bY-tY)*.25);gx.lineTo(bR,bY);gx.stroke();
+  gx.strokeStyle='rgba(255,220,0,.85)';gx.beginPath();gx.moveTo(bL+(tL-bL)*.25,bY-(bY-tY)*.25);gx.lineTo(bL+(tL-bL)*.6,bY-(bY-tY)*.6);gx.lineTo(bR-(bR-tR)*.6,bY-(bY-tY)*.6);gx.lineTo(bR-(bR-tR)*.25,bY-(bY-tY)*.25);gx.stroke();
+  gx.strokeStyle='rgba(0,255,100,.85)';gx.beginPath();gx.moveTo(bL+(tL-bL)*.6,bY-(bY-tY)*.6);gx.lineTo(tL,tY);gx.lineTo(tR,tY);gx.lineTo(bR-(bR-tR)*.6,bY-(bY-tY)*.6);gx.stroke();
+  gx.strokeStyle='rgba(255,165,0,.95)';gx.lineWidth=6;
+  gx.beginPath();gx.moveTo(bL+15,bY);gx.quadraticCurveTo((bL+tL)/2,(bY+tY)/2,tL+off,tY);gx.stroke();
+  gx.beginPath();gx.moveTo(bR-15,bY);gx.quadraticCurveTo((bR+tR)/2,(bY+tY)/2,tR+off,tY);gx.stroke();
+  requestAnimationFrame(loop);
 }
-window.addEventListener('resize', resizeCanvas);
-
-gearBtn.onclick = function() {
-  menuPanel.style.display = (menuPanel.style.display === 'block') ? 'none' : 'block';
-};
-
-sensSlider.oninput = function() {
-  proximityThreshold = parseInt(sensSlider.value);
-};
-
-turnSensSlider.oninput = function() {
-  turnGain = parseInt(turnSensSlider.value) * 0.6;
-};
-
-invertBtn.onclick = function() {
-  invertDir *= -1;
-};
-
-fitBtn.onclick = function() {
-  isCover = !isCover;
-  video.style.objectFit = isCover ? 'cover' : 'contain';
-};
-
-function playToyotaBeep(duration) {
-  if (!audioCtx) return;
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = 'triangle';
-  osc.frequency.value = TOYOTA_FREQ;
-  gain.gain.setValueAtTime(0.001, audioCtx.currentTime);
-  gain.gain.linearRampToValueAtTime(0.35, audioCtx.currentTime + 0.008);
-  gain.gain.setValueAtTime(0.35, audioCtx.currentTime + duration - 0.015);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.start();
-  osc.stop(audioCtx.currentTime + duration);
-}
-
-function setContinuousBeep(active) {
-  if (!audioCtx) return;
-  if (active && !continuousOsc) {
-    continuousOsc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    continuousOsc.type = 'triangle';
-    continuousOsc.frequency.value = TOYOTA_FREQ;
-    gain.gain.value = 0.35;
-    continuousOsc.connect(gain);
-    gain.connect(audioCtx.destination);
-    continuousOsc.start();
-  } else if (!active && continuousOsc) {
-    continuousOsc.stop();
-    continuousOsc.disconnect();
-    continuousOsc = null;
-  }
-}
-
-setInterval(function() {
-  step++;
-  if (currentLevel === 3) {
-    setContinuousBeep(true);
-  } else {
-    setContinuousBeep(false);
-    if (currentLevel === 2 && step % 2 === 0) playToyotaBeep(0.06);
-    else if (currentLevel === 1 && step % 6 === 0) playToyotaBeep(0.07);
-  }
-}, 85);
-
-startBtn.onclick = async function() {
-  try {
-    startBtn.style.display = 'none';
-    statusText.style.display = 'block';
-    gearBtn.style.display = 'flex';
-    statusText.innerText = '起動中...';
-
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    audioCtx = new AudioCtx();
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'environment' },
-      audio: false
-    });
-    video.srcObject = stream;
-
-    setTimeout(function() {
-      resizeCanvas();
-      statusText.innerText = 'クリア';
-      loop();
-    }, 800);
-  } catch (e) {
-    statusText.innerText = 'エラー: ' + e.message;
-  }
-};
-
-function analyzeCameraMotion() {
-  if (video.readyState < 2) return 0;
-  ctx.drawImage(video, 0, 0, 64, 64);
-  const fullData = ctx.getImageData(0, 0, 64, 64).data;
-  
-  let edgeSum = 0;
-  let brightnessSum = 0;
-  let count = 0;
-
-  for (let y = 16; y < 47; y++) {
-    for (let x = 16; x < 47; x++) {
-      const idx = (y * 64 + x) * 4;
-      const idxRight = (y * 64 + (x + 1)) * 4;
-      
-      const bright = (fullData[idx] + fullData[idx + 1] + fullData[idx + 2]) / 3;
-      brightnessSum += bright;
-
-      const edge = Math.abs(fullData[idx] - fullData[idxRight]) + 
-                   Math.abs(fullData[idx + 1] - fullData[idxRight + 1]) + 
-                   Math.abs(fullData[idx + 2] - fullData[idxRight + 2]);
-      edgeSum += edge;
-      count++;
-    }
-  }
-
-  const avgEdge = edgeSum / count;
-  const avgBright = brightnessSum / count;
-  const proximityScore = Math.max(0, 50 - avgEdge * 1.8) + Math.max(0, (120 - avgBright) * 0.4);
-
-  let leftSum = 0;
-  let rightSum = 0;
-  for (let y = 8; y < 56; y += 2) {
-    for (let x = 4; x < 30; x += 2) {
-      const idx = (y * 64 + x) * 4;
-      leftSum += fullData[idx] + fullData[idx + 1] + fullData[idx + 2];
-    }
-    for (let x = 34; x < 60; x += 2) {
-      const idx = (y * 64 + x) * 4;
-      rightSum += fullData[idx] + fullData[idx + 1] + fullData[idx + 2];
-    }
-  }
-
-  if (prevLeftLight !== null && prevRightLight !== null) {
-    const leftDiff = leftSum - prevLeftLight;
-    const rightDiff = rightSum - prevRightLight;
-    const panSignal = (rightDiff - leftDiff) / 12000;
-
-    turnAngle = turnAngle * 0.85 + (panSignal * turnGain * invertDir);
-    if (turnAngle > 1.5) turnAngle = 1.5;
-    if (turnAngle < -1.5) turnAngle = -1.5;
-  }
-
-  prevLeftLight = leftSum;
-  prevRightLight = rightSum;
-
-  return proximityScore;
-}
-
-function drawGuides() {
-  const w = guideCanvas.width;
-  const h = guideCanvas.height;
-  gCtx.clearRect(0, 0, w, h);
-
-  const offset = turnAngle * (w * 0.7);
-
-  const bL = w * 0.15;
-  const bR = w * 0.85;
-  const tL = w * 0.32;
-  const tR = w * 0.68;
-  const tY = h * 0.45;
-  const bY = h * 0.88;
-
-  gCtx.lineWidth = 4;
-
-  // 赤ライン
-  gCtx.strokeStyle = 'rgba(255, 50, 50, 0.85)';
-  gCtx.beginPath();
-  gCtx.moveTo(bL, bY);
-  gCtx.lineTo(bL + (tL - bL) * 0.25, bY - (bY - tY) * 0.25);
-  gCtx.lineTo(bR - (bR - tR) * 0.25, bY - (bY - tY) * 0.25);
-  gCtx.lineTo(bR, bY);
-  gCtx.stroke();
-
-  // 黄ライン
-  gCtx.strokeStyle = 'rgba(255, 220, 0, 0.85)';
-  gCtx.beginPath();
-  gCtx.moveTo(bL + (tL - bL) * 0.25, bY - (bY - tY) * 0.25);
-  gCtx.lineTo(bL + (tL - bL) * 0.6, bY - (bY - tY) * 0.6);
-  gCtx.lineTo(bR - (bR - tR) * 0.6, bY - (bY - tY) * 0.6);
-  gCtx.lineTo(bR - (bR - tR) * 0.25, bY - (bY - tY) * 0.25);
-  gCtx.stroke();
-
-  // 緑ライン
-  gCtx.strokeStyle = 'rgba(0, 255, 100, 0.85)';
-  gCtx.beginPath();
-  gCtx.moveTo(bL + (tL - bL) * 0.6, bY - (bY - tY) * 0.6);
-  gCtx.lineTo(tL, tY);
-  gCtx.lineTo(tR, tY);
-  gCtx.lineTo(bR - (bR - tR) * 0.6, bY - (bY - tY) * 0.6);
-  gCtx.stroke();
-
-  // オレンジ予想進路線
-  gCtx.strokeStyle = 'rgba(255, 165, 0, 0.95)';
-  gCtx.lineWidth = 6;
-  gCtx.beginPath();
-  gCtx.moveTo(bL + 15, bY);
-  gCtx.quadraticCurveTo((bL + tL) / 2, (bY + tY) / 2, tL + offset, tY);
-  gCtx.stroke();
-
-  gCtx.beginPath();
-  gCtx.moveTo(bR - 15, bY);
-  gCtx.quadraticCurveTo((bR + tR) / 2, (bY + tY) / 2, tR + offset, tY);
-  gCtx.stroke();
-}
-
-function loop() {
-  drawGuides();
-  const score = analyzeCameraMotion();
-  const trigger = 100 - proximityThreshold;
-
-  if (score > trigger + 22) {
-    currentLevel = 3;
+</script>
+</body>
+</html>
