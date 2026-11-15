@@ -3,41 +3,46 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RC パーキングセンサー</title>
-<script src="https://jsdelivr.net"></script>
-<script src="https://jsdelivr.net"></script>
+<title>RC ソナー軽量版</title>
 <style>
   body { margin: 0; background: #111; color: #fff; font-family: sans-serif; text-align: center; overflow: hidden; }
   #container { position: relative; width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
-  video, canvas { position: absolute; max-width: 100%; max-height: 100%; }
-  #ui { position: absolute; top: 20px; z-index: 10; background: rgba(0,0,0,0.6); padding: 10px 20px; border-radius: 10px; }
-  button { font-size: 18px; padding: 10px 25px; background: #007bff; color: white; border: none; border-radius: 8px; cursor: pointer; }
-  #status { font-size: 20px; font-weight: bold; margin-top: 10px; color: #0f0; }
+  video { width: 100%; height: 100%; object-fit: cover; }
+  #target-box {
+    position: absolute; width: 45%; height: 35%;
+    border: 4px solid #00ff00; border-radius: 12px;
+    box-sizing: border-box; pointer-events: none;
+    transition: border-color 0.2s;
+  }
+  #ui { position: absolute; top: 30px; z-index: 10; background: rgba(0,0,0,0.7); padding: 15px 25px; border-radius: 12px; }
+  button { font-size: 20px; padding: 12px 30px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; }
+  #status { font-size: 22px; font-weight: bold; margin-top: 10px; color: #0f0; }
 </style>
 </head>
 <body>
 
 <div id="container">
   <video id="video" playsinline muted autoplay></video>
-  <canvas id="canvas"></canvas>
+  <div id="target-box"></div>
   <div id="ui">
     <button id="startBtn">ソナー起動</button>
     <div id="status">待機中...</div>
   </div>
 </div>
+<canvas id="canvas" width="64" height="64" style="display:none;"></canvas>
 
 <script>
 const video = document.getElementById('video');
 const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+const ctx = canvas.getContext('2d', { willReadFrequently: true });
+const targetBox = document.getElementById('target-box');
 const statusText = document.getElementById('status');
 const startBtn = document.getElementById('startBtn');
 
-let model, audioCtx;
-let currentLevel = 0; // 0:安全, 1:遠い(緑), 2:近い(黄), 3:危険(赤)
-let beepTimer = null;
+let audioCtx;
+let currentLevel = 0;
+let baseColor = null;
 
-// 警告音（ピッ）を鳴らす関数
 function playBeep(duration = 0.08, freq = 1000) {
   if (!audioCtx) return;
   const osc = audioCtx.createOscillator();
@@ -51,91 +56,78 @@ function playBeep(duration = 0.08, freq = 1000) {
   osc.stop(audioCtx.currentTime + duration);
 }
 
-// 距離レベルに応じて音のテンポを変えるループ
-function startBeepLoop() {
-  if (beepTimer) clearInterval(beepTimer);
-  let step = 0;
-  beepTimer = setInterval(() => {
-    step++;
-    if (currentLevel === 3) {
-      playBeep(0.15, 1200); // 連続音に近い速さ
-    } else if (currentLevel === 2 && step % 2 === 0) {
-      playBeep(0.08, 1000); // 速い「ピピピ」
-    } else if (currentLevel === 1 && step % 5 === 0) {
-      playBeep(0.08, 900);  // ゆっくり「ピッ」
-    }
-  }, 150);
-}
+// 音のループ
+setInterval(() => {
+  if (currentLevel === 3) playBeep(0.14, 1200);
+  else if (currentLevel === 2) playBeep(0.08, 1000);
+}, 200);
 
-// カメラとAIの起動
+setInterval(() => {
+  if (currentLevel === 1) playBeep(0.08, 900);
+}, 600);
+
 startBtn.addEventListener('click', async () => {
-  startBtn.style.display = 'none';
-  statusText.innerText = 'AIモデル読み込み中...';
-  
-  // スマホのブラウザで音を鳴らすための初期化
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  
-  // 背面カメラを起動
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'environment' }, audio: false
-  });
-  video.srcObject = stream;
-  await new Promise(r => video.onloadedmetadata = r);
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
+  try {
+    startBtn.style.display = 'none';
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
 
-  model = await cocoSsd.load();
-  statusText.innerText = 'ソナー稼働中';
-  startBeepLoop();
-  detectFrame();
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' }, audio: false
+    });
+    video.srcObject = stream;
+    statusText.innerText = 'センサー調整中...';
+
+    // 1秒後に基準の景色を記憶
+    setTimeout(() => {
+      baseColor = getCenterColor();
+      statusText.innerText = 'ソナー稼働中';
+      loop();
+    }, 1000);
+  } catch (e) {
+    statusText.innerText = 'カメラエラー: ' + e.message;
+    statusText.style.color = '#ff3333';
+  }
 });
 
-// 毎フレームの物体検知と距離判定
-async function detectFrame() {
-  const predictions = await model.detect(video);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
-  let maxRatio = 0;
+function getCenterColor() {
+  ctx.drawImage(video, 0, 0, 64, 64);
+  const data = ctx.getImageData(20, 20, 24, 24).data;
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    r += data[i]; g += data[i+1]; b += data[i+2]; count++;
+  }
+  return { r: r/count, g: g/count, b: b/count };
+}
 
-  predictions.forEach(pred => {
-    const [x, y, width, height] = pred.bbox;
-    // 画面の横幅に対して物体がどれくらいの割合を占めているかで距離を推定
-    const widthRatio = width / canvas.width;
-    if (widthRatio > maxRatio) maxRatio = widthRatio;
+function loop() {
+  if (!baseColor) return;
+  const now = getCenterColor();
+  // 最初の景色からの変化量（近づくと影や色が大きく変わるのを利用）
+  const diff = Math.abs(now.r - baseColor.r) + Math.abs(now.g - baseColor.g) + Math.abs(now.b - baseColor.b);
 
-    // 枠の色を決定
-    let color = '#00ff00';
-    if (widthRatio > 0.6) color = '#ff0000';
-    else if (widthRatio > 0.35) color = '#ffff00';
-
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 4;
-    ctx.strokeRect(x, y, width, height);
-    ctx.fillStyle = color;
-    ctx.font = '18px sans-serif';
-    ctx.fillText(`${pred.class} (${Math.round(widthRatio * 100)}%)`, x, y > 20 ? y - 5 : 20);
-  });
-
-  // 警告レベルの更新
-  if (maxRatio > 0.6) {
+  if (diff > 180) {
     currentLevel = 3;
-    statusText.innerText = '危険！停止してください';
+    targetBox.style.borderColor = '#ff0000';
+    statusText.innerText = '危険！ストップ';
     statusText.style.color = '#ff3333';
-  } else if (maxRatio > 0.35) {
+  } else if (diff > 110) {
     currentLevel = 2;
+    targetBox.style.borderColor = '#ffff00';
     statusText.innerText = '接近中';
     statusText.style.color = '#ffff33';
-  } else if (maxRatio > 0.15) {
+  } else if (diff > 55) {
     currentLevel = 1;
-    statusText.innerText = '障害物あり';
+    targetBox.style.borderColor = '#00ff00';
+    statusText.innerText = '障害物検知';
     statusText.style.color = '#33ff33';
   } else {
     currentLevel = 0;
+    targetBox.style.borderColor = '#00ff00';
     statusText.innerText = 'クリア';
     statusText.style.color = '#ffffff';
   }
-
-  requestAnimationFrame(detectFrame);
+  requestAnimationFrame(loop);
 }
 </script>
 </body>
