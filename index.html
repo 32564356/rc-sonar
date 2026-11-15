@@ -3,15 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>RC トヨタ風ソナー＆ガイド（縦横全画面対応）</title>
+<title>RC トヨタ風ソナー＆連動ガイド</title>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
   #container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: flex; justify-content: center; align-items: center; background: #000; }
   
-  /* 画面いっぱいに広げる（横画面でも上下の黒帯をなくす） */
   video { width: 100%; height: 100%; object-fit: cover; }
-  
   #guide-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
   
   #ui { position: absolute; top: 15px; left: 15px; z-index: 15; background: rgba(0,0,0,0.65); padding: 8px 16px; border-radius: 20px; }
@@ -78,13 +76,15 @@ let currentLevel = 0;
 let continuousOsc = null;
 let step = 0;
 let turnAngle = 0;
-let invertDir = -1;
+let invertDir = 1;
 let proximityThreshold = 45;
 let isCover = true;
 
+let prevRow = null;
+let gyroWorking = false;
+
 const TOYOTA_FREQ = 2500;
 
-// 画面の向き（縦・横）が変わったら自動でサイズを再計算
 function resizeCanvas() {
   guideCanvas.width = window.innerWidth;
   guideCanvas.height = window.innerHeight;
@@ -103,7 +103,6 @@ invertBtn.onclick = function() {
   invertDir *= -1;
 };
 
-// 「画面いっぱい（cover）」と「1倍全体表示（contain）」を歯車メニューからいつでも切り替え可能に
 fitBtn.onclick = function() {
   isCover = !isCover;
   video.style.objectFit = isCover ? 'cover' : 'contain';
@@ -156,6 +155,18 @@ setInterval(function() {
 
 startBtn.onclick = async function() {
   try {
+    // 1. タップした瞬間に最優先でジャイロ許可を取得（GitHub環境で確実に許可を出すため）
+    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
+      try {
+        const res = await DeviceMotionEvent.requestPermission();
+        if (res === 'granted') {
+          window.addEventListener('devicemotion', onMotion);
+        }
+      } catch (err) {}
+    } else if (window.DeviceMotionEvent) {
+      window.addEventListener('devicemotion', onMotion);
+    }
+
     startBtn.style.display = 'none';
     statusText.style.display = 'block';
     gearBtn.style.display = 'flex';
@@ -169,21 +180,11 @@ startBtn.onclick = async function() {
     });
     video.srcObject = stream;
 
-    if (window.DeviceMotionEvent) {
-      if (typeof DeviceMotionEvent.requestPermission === 'function') {
-        DeviceMotionEvent.requestPermission().then(function(res) {
-          if (res === 'granted') window.addEventListener('devicemotion', onMotion);
-        }).catch(function(){});
-      } else {
-        window.addEventListener('devicemotion', onMotion);
-      }
-    }
-
     setTimeout(function() {
       resizeCanvas();
       statusText.innerText = 'クリア';
       loop();
-    }, 1000);
+    }, 800);
   } catch (e) {
     statusText.innerText = 'エラー: ' + e.message;
   }
@@ -193,31 +194,40 @@ function onMotion(e) {
   if (!e.rotationRate) return;
   const rZ = e.rotationRate.alpha || 0;
   const rY = e.rotationRate.beta || 0;
-  const spd = (Math.abs(rZ) > Math.abs(rY)) ? rZ : rY;
-  turnAngle = turnAngle * 0.85 + (spd * 0.015 * invertDir);
-  if (turnAngle > 1) turnAngle = 1;
-  if (turnAngle < -1) turnAngle = -1;
+  const rX = e.rotationRate.gamma || 0;
+  // 縦置き・横置き・平置きどの向きでも一番大きく回った軸を検知
+  let spd = rZ;
+  if (Math.abs(rY) > Math.abs(spd)) spd = rY;
+  if (Math.abs(rX) > Math.abs(spd)) spd = rX;
+
+  if (Math.abs(spd) > 0.05) {
+    gyroWorking = true;
+    // 感度を3倍にアップし、余韻を残しながら滑らかに戻す
+    turnAngle = turnAngle * 0.90 + (spd * 0.045 * invertDir);
+    if (turnAngle > 1.2) turnAngle = 1.2;
+    if (turnAngle < -1.2) turnAngle = -1.2;
+  }
 }
 
-function getProximityScore() {
+function analyzeFrame() {
   ctx.drawImage(video, 0, 0, 64, 64);
-  const data = ctx.getImageData(16, 16, 32, 32).data;
+  const fullData = ctx.getImageData(0, 0, 64, 64).data;
   
   let edgeSum = 0;
   let brightnessSum = 0;
   let count = 0;
 
-  for (let y = 0; y < 31; y++) {
-    for (let x = 0; x < 31; x++) {
-      const idx = (y * 32 + x) * 4;
-      const idxRight = (y * 32 + (x + 1)) * 4;
+  for (let y = 16; y < 47; y++) {
+    for (let x = 16; x < 47; x++) {
+      const idx = (y * 64 + x) * 4;
+      const idxRight = (y * 64 + (x + 1)) * 4;
       
-      const bright = (data[idx] + data[idx+1] + data[idx+2]) / 3;
+      const bright = (fullData[idx] + fullData[idx+1] + fullData[idx+2]) / 3;
       brightnessSum += bright;
 
-      const edge = Math.abs(data[idx] - data[idxRight]) + 
-                   Math.abs(data[idx+1] - data[idxRight+1]) + 
-                   Math.abs(data[idx+2] - data[idxRight+2]);
+      const edge = Math.abs(fullData[idx] - fullData[idxRight]) + 
+                   Math.abs(fullData[idx+1] - fullData[idxRight+1]) + 
+                   Math.abs(fullData[idx+2] - fullData[idxRight+2]);
       edgeSum += edge;
       count++;
     }
@@ -225,8 +235,41 @@ function getProximityScore() {
 
   const avgEdge = edgeSum / count;
   const avgBright = brightnessSum / count;
+  const proximityScore = Math.max(0, 50 - avgEdge * 1.8) + Math.max(0, (120 - avgBright) * 0.4);
 
-  return Math.max(0, 50 - avgEdge * 1.8) + Math.max(0, (120 - avgBright) * 0.4);
+  // ジャイロが許可されなかった場合でもカメラの横流れで斜め線を動かす
+  if (!gyroWorking) {
+    let currentRow = new Float32Array(64);
+    for (let x = 0; x < 64; x++) {
+      let sum = 0;
+      for (let y = 24; y < 40; y++) {
+        const idx = (y * 64 + x) * 4;
+        sum += (fullData[idx] + fullData[idx+1] + fullData[idx+2]) / 3;
+      }
+      currentRow[x] = sum / 16;
+    }
+
+    if (prevRow) {
+      let bestShift = 0;
+      let minDiff = 999999;
+      for (let shift = -6; shift <= 6; shift++) {
+        let diff = 0;
+        for (let x = 8; x < 56; x++) {
+          diff += Math.abs(currentRow[x] - prevRow[x + shift]);
+        }
+        if (diff < minDiff) {
+          minDiff = diff;
+          bestShift = shift;
+        }
+      }
+      turnAngle = turnAngle * 0.88 + (bestShift * 0.18 * invertDir);
+      if (turnAngle > 1.2) turnAngle = 1.2;
+      if (turnAngle < -1.2) turnAngle = -1.2;
+    }
+    prevRow = currentRow;
+  }
+
+  return proximityScore;
 }
 
 function drawGuides() {
@@ -234,7 +277,7 @@ function drawGuides() {
   const h = guideCanvas.height;
   gCtx.clearRect(0, 0, w, h);
 
-  const offset = turnAngle * (w * 0.45);
+  const offset = turnAngle * (w * 0.55);
   const bL = w * 0.15, bR = w * 0.85;
   const tL = w * 0.32, tR = w * 0.68;
   const tY = h * 0.45, bY = h * 0.88;
@@ -268,46 +311,4 @@ function drawGuides() {
   gCtx.lineTo(bR - (bR - tR)*0.6, bY - (bY - tY)*0.6);
   gCtx.stroke();
 
-  // オレンジ予想線
-  gCtx.strokeStyle = 'rgba(255, 165, 0, 0.95)';
-  gCtx.lineWidth = 5;
-  gCtx.beginPath();
-  gCtx.moveTo(bL + 15, bY);
-  gCtx.quadraticCurveTo((bL + tL)/2, (bY + tY)/2, tL + offset, tY);
-  gCtx.stroke();
-
-  gCtx.beginPath();
-  gCtx.moveTo(bR - 15, bY);
-  gCtx.quadraticCurveTo((bR + tR)/2, (bY + tY)/2, tR + offset, tY);
-  gCtx.stroke();
-}
-
-function loop() {
-  drawGuides();
-  
-  const score = getProximityScore();
-  const trigger = 100 - proximityThreshold;
-
-  if (score > trigger + 22) {
-    currentLevel = 3;
-    statusText.innerText = '危険！ストップ';
-    statusText.style.color = '#ff3333';
-  } else if (score > trigger + 10) {
-    currentLevel = 2;
-    statusText.innerText = '接近中';
-    statusText.style.color = '#ffff33';
-  } else if (score > trigger) {
-    currentLevel = 1;
-    statusText.innerText = '障害物検知';
-    statusText.style.color = '#33ff33';
-  } else {
-    currentLevel = 0;
-    statusText.innerText = 'クリア';
-    statusText.style.color = '#ffffff';
-  }
-
-  requestAnimationFrame(loop);
-}
-</script>
-</body>
-</html>
+  // オレンジ予想進路線
