@@ -16,10 +16,11 @@
   #startBtn { font-size: 18px; padding: 12px 24px; background: #007bff; color: white; border: none; border-radius: 8px; font-weight: bold; }
   #status { font-size: 16px; font-weight: bold; color: #0f0; }
 
+  /* 更新されたことが一目でわかるよう枠線をオレンジに変更 */
   #gearBtn {
     position: absolute; top: 15px; right: 15px; z-index: 20;
     width: 44px; height: 44px; border-radius: 50%;
-    background: rgba(0,0,0,0.7); border: 2px solid #888;
+    background: rgba(0,0,0,0.75); border: 2px solid #ffa500;
     color: #fff; font-size: 20px; display: none;
     justify-content: center; align-items: center;
   }
@@ -51,7 +52,7 @@
     <input type="range" id="sensSlider" min="10" max="90" value="45" style="width:100%; margin:6px 0 12px 0;">
     
     <div style="font-size:13px; color:#ccc;">ガイド線の曲がり感度（右で大きく曲がる）</div>
-    <input type="range" id="turnSensSlider" min="1" max="10" value="6" style="width:100%; margin:6px 0 12px 0;">
+    <input type="range" id="turnSensSlider" min="1" max="10" value="7" style="width:100%; margin:6px 0 12px 0;">
 
     <button class="subBtn" id="invertBtn">↔️ ガイド左右反転</button>
     <button class="subBtn" id="fitBtn">🖥️ 画面フィット切替</button>
@@ -84,10 +85,11 @@ let step = 0;
 let turnAngle = 0;
 let invertDir = -1;
 let proximityThreshold = 45;
-let turnSensitivity = 1.2;
+let turnGain = 3.5; // わずかな横移動も大きく増幅する倍率
 let isCover = true;
 
-let prevCenterOfMass = null;
+let prevLeftLight = null;
+let prevRightLight = null;
 const TOYOTA_FREQ = 2500;
 
 function resizeCanvas() {
@@ -105,7 +107,7 @@ sensSlider.oninput = function() {
 };
 
 turnSensSlider.oninput = function() {
-  turnSensitivity = parseInt(turnSensSlider.value) * 0.2;
+  turnGain = parseInt(turnSensSlider.value) * 0.5;
 };
 
 invertBtn.onclick = function() {
@@ -217,31 +219,33 @@ function analyzeCameraMotion() {
   const avgBright = brightnessSum / count;
   const proximityScore = Math.max(0, 50 - avgEdge * 1.8) + Math.max(0, (120 - avgBright) * 0.4);
 
-  // 2. 映像内の「明るさ・色の重心位置（X座標）」の移動をダイレクトに計算
-  let weightedX = 0;
-  let totalWeight = 0;
-
+  // 2. 画面の「左側エリア」と「右側エリア」の明るさ・色変化の差分で横移動を直接検出
+  let leftSum = 0;
+  let rightSum = 0;
   for (let y = 8; y < 56; y += 2) {
-    for (let x = 4; x < 60; x += 2) {
+    for (let x = 4; x < 30; x += 2) {
       const idx = (y * 64 + x) * 4;
-      // 明るさ＋赤み＋青みの特徴量
-      const val = fullData[idx] * 0.5 + fullData[idx+1] * 0.3 + fullData[idx+2] * 0.2;
-      weightedX += x * val;
-      totalWeight += val;
+      leftSum += fullData[idx] + fullData[idx+1] + fullData[idx+2];
+    }
+    for (let x = 34; x < 60; x += 2) {
+      const idx = (y * 64 + x) * 4;
+      rightSum += fullData[idx] + fullData[idx+1] + fullData[idx+2];
     }
   }
 
-  if (totalWeight > 0) {
-    const centerOfMass = weightedX / totalWeight; // 0〜64の間の重心位置
-    if (prevCenterOfMass !== null) {
-      const deltaX = centerOfMass - prevCenterOfMass; // 右に動けばプラス、左ならマイナス
-      // 微細な動きも大きく増幅して反映し、止まったらゆっくり直進に戻る
-      turnAngle = turnAngle * 0.85 + (deltaX * turnSensitivity * invertDir);
-      if (turnAngle > 1.5) turnAngle = 1.5;
-      if (turnAngle < -1.5) turnAngle = -1.5;
-    }
-    prevCenterOfMass = centerOfMass;
+  if (prevLeftLight !== null && prevRightLight !== null) {
+    const leftDiff = leftSum - prevLeftLight;
+    const rightDiff = rightSum - prevRightLight;
+    // 左右の変化量の差（片側が明るくなり反対側が暗くなる＝横にカメラが動いた証拠）
+    const panSignal = (rightDiff - leftDiff) / 15000;
+
+    turnAngle = turnAngle * 0.85 + (panSignal * turnGain * invertDir);
+    if (turnAngle > 1.5) turnAngle = 1.5;
+    if (turnAngle < -1.5) turnAngle = -1.5;
   }
+
+  prevLeftLight = leftSum;
+  prevRightLight = rightSum;
 
   return proximityScore;
 }
@@ -251,7 +255,7 @@ function drawGuides() {
   const h = guideCanvas.height;
   gCtx.clearRect(0, 0, w, h);
 
-  const offset = turnAngle * (w * 0.65);
+  const offset = turnAngle * (w * 0.7);
 
   const bL = w * 0.15, bR = w * 0.85;
   const tL = w * 0.32, tR = w * 0.68;
@@ -307,7 +311,3 @@ function loop() {
 
   if (score > trigger + 22) {
     currentLevel = 3;
-    statusText.innerText = '危険！ストップ';
-    statusText.style.color = '#ff3333';
-  } else if (score > trigger + 10) {
-    currentLevel = 2;
