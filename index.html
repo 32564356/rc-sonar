@@ -72,16 +72,21 @@ function speakWarning(text){
   }catch(e){}
 }
 
+// 動画のシエンタのような、耳に優しい「ポン、ポン、ポン…」音（約740Hz・柔らかい余韻）
 function beep(d){
   if(!ac)return;
   try{
     var o=ac.createOscillator(),gn=ac.createGain();
     o.type='sine';
-    o.frequency.setValueAtTime(1180,ac.currentTime);
-    o.frequency.exponentialRampToValueAtTime(1060,ac.currentTime+d);
+    // 780Hzから690Hzへわずかに下がることで「ポン」という丸い響きを作る
+    o.frequency.setValueAtTime(780,ac.currentTime);
+    o.frequency.exponentialRampToValueAtTime(690,ac.currentTime+d);
+
+    // 立ち上がりを緩やかにして「パチッ」という耳障りな高音を消す
     gn.gain.setValueAtTime(0.001,ac.currentTime);
-    gn.gain.linearRampToValueAtTime(0.5,ac.currentTime+0.006);
+    gn.gain.linearRampToValueAtTime(0.42,ac.currentTime+0.018);
     gn.gain.exponentialRampToValueAtTime(0.0001,ac.currentTime+d);
+
     o.connect(gn);gn.connect(ac.destination);
     o.start();o.stop(ac.currentTime+d);
   }catch(e){}
@@ -93,16 +98,19 @@ setInterval(function(){
     if(!osc&&ac){
       try{
         osc=ac.createOscillator();var gn=ac.createGain();
-        osc.type='sine';osc.frequency.value=1120;gn.gain.value=0.45;
+        osc.type='sine';
+        osc.frequency.value=720; // 連続音も耳に優しい低めトーン「ポーーー」
+        gn.gain.setValueAtTime(0.001,ac.currentTime);
+        gn.gain.linearRampToValueAtTime(0.35,ac.currentTime+0.05);
         osc.connect(gn);gn.connect(ac.destination);osc.start();
       }catch(e){}
     }
   }else{
     if(osc){try{osc.stop();}catch(e){}osc=null;}
-    if(lv===2&&st%2===0)beep(0.055);
-    else if(lv===1&&st%6===0)beep(0.06);
+    if(lv===2&&st%2===0)beep(0.11);      // 速い「ポン・ポン・ポン」
+    else if(lv===1&&st%6===0)beep(0.13); // ゆったり「ポン……ポン……」
   }
-},85);
+},95);
 
 function startApp(){
   b.style.display='none';
