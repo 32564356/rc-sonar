@@ -50,7 +50,6 @@ function toggleVoice(){
   voiceBtn.style.background = voiceOn ? '#007bff' : '#333';
 }
 
-// シエンタ風の落ち着いた音声アナウンス（「右後方です」「左後方です」「後方です」）
 function speakWarning(text){
   if(!voiceOn || !('speechSynthesis' in window)) return;
   var now = Date.now();
@@ -69,7 +68,6 @@ function speakWarning(text){
   }catch(e){}
 }
 
-// シエンタのクリアランスソナー風・軽やかで丸い「ポッ、ポッ」音（1150Hz・短く歯切れ良い音）
 function beep(d){
   if(!ac)return;
   try{
@@ -156,7 +154,6 @@ function calcAreaScore(d, xStart, xEnd){
   return Math.max(0, 50-(ed/c)*1.8) + Math.max(0, (120-(br/c))*0.4);
 }
 
-// 左下・右下の角に3重のソナー波紋曲線を描画
 function drawCornerSonar(ctx, cornerX, cornerY, isLeft, level){
   if(level <= 0) return;
   var blinkSpeed = (level === 3) ? 100 : (level === 2 ? 200 : 400);
@@ -175,10 +172,19 @@ function drawCornerSonar(ctx, cornerX, cornerY, isLeft, level){
   var startAngle = isLeft ? -Math.PI * 0.45 : Math.PI * 1.05;
   var endAngle   = isLeft ? -Math.PI * 0.05 : Math.PI * 1.45;
 
-  var radii =;
-  for(var rIdx = 0; rIdx < level; rIdx++){
+  if(level >= 1){
     ctx.beginPath();
-    ctx.arc(cornerX, cornerY, radii[rIdx], startAngle, endAngle);
+    ctx.arc(cornerX, cornerY, 36, startAngle, endAngle);
+    ctx.stroke();
+  }
+  if(level >= 2){
+    ctx.beginPath();
+    ctx.arc(cornerX, cornerY, 64, startAngle, endAngle);
+    ctx.stroke();
+  }
+  if(level >= 3){
+    ctx.beginPath();
+    ctx.arc(cornerX, cornerY, 92, startAngle, endAngle);
     ctx.stroke();
   }
 
@@ -205,7 +211,6 @@ function loop(){
     rightLv = (scoreR > tr+22) ? 3 : (scoreR > tr+10 ? 2 : (scoreR > tr ? 1 : 0));
     lv = Math.max(leftLv, rightLv);
 
-    // シエンタ風の音声案内（「右後方です」「左後方です」「後方です」）
     if(leftLv >= 2 && rightLv >= 2){
       speakWarning('後方です');
     } else if(leftLv >= 2 && leftLv > rightLv){
